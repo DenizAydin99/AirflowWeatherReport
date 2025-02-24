@@ -1,0 +1,22 @@
+# Virtual Environment
+venv/
+3_10_airflow_env/
+
+# Airflow Logs
+logs/
+
+# Airflow Database
+airflow.db
+
+# Airflow Configuration File
+airflow.cfg
+
+# Compiled Python Files
+__pycache__/
+
+# Jupyter Notebook Checkpoints (if using notebooks)
+.ipynb_checkpoints/
+
+# System Files (Mac & Windows)
+.DS_Store
+Thumbs.db
