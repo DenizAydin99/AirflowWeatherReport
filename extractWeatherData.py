@@ -1,72 +1,192 @@
-import requests
 import os
+import logging
+import requests
 from dotenv import load_dotenv
-import psycopg2
-import time
+from datetime import timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+import pendulum
+import socket
+from requests.exceptions import Timeout, ConnectionError
+from _scproxy import _get_proxy_settings
 
-# Load the .env file
+_get_proxy_settings()
+os.environ['NO_PROXY'] = '*'
+
+# Loads environment variables (API_KEY) from an environment file
 load_dotenv()
 
-# Get the API key from the .env file
-API_KEY = os.getenv("WEATHERSTACK_API_KEY")
+API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 
-# Database connection settings
-DB_HOST = "localhost"
-DB_NAME = "weather_data"
-DB_USER = "denizaydin"
+AIRFLOW_PG_CONN_ID = "postgres_default"
 
-# Connect to PostgreSQL
-try:
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        dbname=DB_NAME,
-        user=DB_USER
-    )
-    cur = conn.cursor()
-    print("Successfully connected to PostgreSQL!")
-except Exception as e:
-    print(f"Database connection failed: {e}")
-    exit()
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "start_date": pendulum.today('UTC').add(days=-1),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
 
-cities = ["New York", "London", "Istanbul", "Tokyo"]
+dag = DAG(
+    "weather_etl",
+    default_args=default_args,
+    description="ETL pipeline to fetch weather data and store in PostgreSQL",
+    schedule_interval=timedelta(days=1),
+    catchup=False,
+)
 
-# Request for each city
-for city in cities:
-    params = {
-        "access_key": API_KEY,
-        "query": city,
-        "units": "m"
-    }
-    response = requests.get("http://api.weatherstack.com/current", params=params)
-
-    if response.status_code == 200:
-        data = response.json()
-
-        # Ensure API returned data correctly
-        if "location" in data and "current" in data:
-            temperature = data["current"]["temperature"]
-            humidity = data["current"]["humidity"]
-            wind_speed = data["current"]["wind_speed"]
-            description = data["current"]["weather_descriptions"][0]
-
-            # Insert data into PostgreSQL
+#  Receives current weather data from OpenWeatherMap API
+def extract_weather_data(**kwargs):
+    logging.info("Starting Weather Data Extraction Task")
+    weather_data_list = []
+    
+    # Specify the cities to fetch weather data for
+    cities = [
+        {"lat": 51.51, "lon": 0.12, "cityName":"London"},
+        {"lat": 35.67, "lon": 139.65, "cityName":"Tokyo"},
+        {"lat": 48.85, "lon": 2.35, "cityName":"Paris"}, 
+        {"lat": 52.36, "lon": 4.90, "cityName":"Amsterdam"},
+        {"lat": 43.71, "lon": 7.26, "cityName":"Nice"}, 
+        {"lat": 50.11, "lon": 8.68, "cityName":"Frankfurt"}, 
+        {"lat": 53.55, "lon": 9.99, "cityName":"Hamburg"}, 
+        {"lat": 40.71, "lon": 74.00, "cityName":"New York"}, 
+        {"lat": 41.90, "lon": 12.48, "cityName":"Rome"}, 
+        {"lat": 53.35, "lon": 6.26, "cityName":"Dublin"}, 
+        {"lat": 41.01, "lon": 28.98, "cityName":"Istanbul"}, 
+        {"lat": 40.42, "lon": 3.70, "cityName":"Madrid"}, 
+        {"lat": 41.39, "lon": 2.17, "cityName":"Barcelona"}, 
+    ]
+    
+    try:
+        socket.create_connection(("api.openweathermap.org", 80), timeout=5)
+        logging.info("Network connection test successful")
+    except OSError:
+        logging.error("Network connection test failed: Unable to reach OpenWeatherMap API")
+    
+    logging.info(f"API Key: {API_KEY}")
+    
+    for city in cities:
+        params = {
+            "appid": API_KEY,
+            "units": "metric",
+            "lat": city["lat"],
+            "lon": city["lon"]
+        }
+        logging.info(f"params: {params}")
+        try:
+            logging.info(f"trying to extract from API for {city}")
             try:
-                cur.execute("""
-                    INSERT INTO weather (city, temperature, humidity, wind_speed, description)
-                    VALUES (%s, %s, %s, %s, %s);
-                """, (city, temperature, humidity, wind_speed, description))
-
-                conn.commit()
-                print(f"Data inserted for {city}!")
+                
+                response = requests.get("http://api.openweathermap.org/data/2.5/weather", params=params, timeout=10)            
+                logging.info(f"API Response was: {response}")
+                response.raise_for_status()
+            except Timeout:
+                logging.error(f"API Request Timeout for {city}")
+                continue
+            except ConnectionError:
+                logging.error(f"API Connection Error for {city}")
+                continue
             except Exception as e:
-                print(f"Error inserting data for {city}: {e}")
-                conn.rollback()
-        else:
-            print(f"API response did not contain expected data for {city}: {data}")
-    else:
-        print(f"API Request Failed for {city}: {response.status_code}, {response.text}")
+                logging.error(f"API Request Failed for {city}: {e}")
+                continue
+            
+            logging.info(f"API Status Code: {response.status_code}")
+            data = response.json()
+            logging.info(f"Received response: {data}")
 
-    time.sleep(1)
+            # Extracts fields from API response
+            weather_data = {
+                'country': data["sys"]["country"],
+                'latitude': data["coord"]["lat"],
+                'longitude': data["coord"]["lon"],
+                'weather_main': data["weather"][0]["main"],
+                'weather_description': data["weather"][0]["description"],
+                'temp': data["main"]["temp"],
+                'feels_like': data["main"]["feels_like"],
+                'temp_min': data["main"]["temp_min"],
+                'temp_max': data["main"]["temp_max"],
+                'pressure': data["main"]["pressure"],
+                'humidity': data["main"]["humidity"],
+                'wind_speed': data["wind"]["speed"],
+                'wind_deg': data["wind"]["deg"],
+                'wind_gust': data["wind"].get("gust", None),  # handles missing gust values
+                'cloudiness': data["clouds"]["all"],
+                'visibility': data["visibility"],
+                'sunrise': data["sys"]["sunrise"],
+                'sunset': data["sys"]["sunset"]
+            }
+            logging.info(f"Extracted from API: {weather_data}")
 
-cur.close()
-conn.close()
+            # Pushes each city's weather data to XCom with a unique key
+            city_key = f"weather_data_{city['cityName']}"
+            logging.info(f"Pushed weather data for {city['cityName']} with key '{city_key}'")
+
+            weather_data_list.append(weather_data)
+            kwargs['ti'].xcom_push(key="weather_data", value=weather_data_list)
+            logging.info(f"Successfully fetched weather for {city}")
+            
+        except requests.exceptions.RequestException as e:
+            logging.error(f"API Request Failed for {city}: {e}")
+            continue
+    logging.info("Weather Data Fetch Task Completed")
+
+# Airflow Tasks -----------------------------------------------------
+execute_extract_weather_data = PythonOperator(
+    task_id="extract_weather_data",
+    python_callable=extract_weather_data,
+    provide_context=True,
+    dag=dag,
+)   
+# Loads weather data into PostgreSQL using XCom and Jinja templating
+execute_load_weather_data = SQLExecuteQueryOperator(
+    task_id="load_weather_data",
+    conn_id=AIRFLOW_PG_CONN_ID,
+    sql="""
+    {% set weather_list = ti.xcom_pull(task_ids='extract_weather_data', key='weather_data') or [] %}
+
+    {% if weather_list | length > 0 %}
+    INSERT INTO public.weather (
+        country, latitude, longitude, weather_main, weather_description, temp, feels_like,
+        temp_min, temp_max, pressure, humidity, wind_speed, wind_deg, wind_gust,
+        cloudiness, visibility, sunrise, sunset
+    ) VALUES
+    {% for weather in weather_list -%}
+    (
+        '{{ weather["country"] }}',
+        {{ weather["latitude"] }},
+        {{ weather["longitude"] }},
+        '{{ weather["weather_main"] }}',
+        '{{ weather["weather_description"] }}',
+        {{ weather["temp"] }},
+        {{ weather["feels_like"] }},
+        {{ weather["temp_min"] }},
+        {{ weather["temp_max"] }},
+        {{ weather["pressure"] }},
+        {{ weather["humidity"] }},
+        {{ weather["wind_speed"] }},
+        {{ weather["wind_deg"] }},
+        {% if weather["wind_gust"] is not none %}
+            {{ weather["wind_gust"] }}
+        {% else %}
+            NULL
+        {% endif %},
+        {{ weather["cloudiness"] }},
+        {{ weather["visibility"] }},
+        TO_TIMESTAMP({{ weather["sunrise"] }}),
+        TO_TIMESTAMP({{ weather["sunset"] }})
+    ){% if not loop.last %}, {% endif %}
+    {% endfor %};
+    {% else %}
+    -- No data to insert
+    SELECT 1;
+    {% endif %}
+    """,
+    autocommit=True,
+    dag=dag,
+)
+
+execute_extract_weather_data >> execute_load_weather_data
