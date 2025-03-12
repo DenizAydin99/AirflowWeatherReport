@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import json
 from dotenv import load_dotenv
 from datetime import timedelta
 from airflow import DAG
@@ -19,10 +20,8 @@ os.environ['NO_PROXY'] = '*'
 load_dotenv()
 
 API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
+API_URL = os.getenv("OPENWEATHERMAP_API_URL")
 
-AIRFLOW_PG_CONN_ID = "postgres_default"
-
-# Specify the cities to fetch weather data for
 cities = [
     {"lat": 51.51, "lon": 0.12, "cityName": "London"},
     {"lat": 35.67, "lon": 139.65, "cityName": "Tokyo"},
@@ -36,8 +35,13 @@ cities = [
     {"lat": 53.35, "lon": 6.26, "cityName": "Dublin"},
     {"lat": 41.01, "lon": 28.98, "cityName": "Istanbul"},
     {"lat": 40.42, "lon": 3.70, "cityName": "Madrid"},
-    {"lat": 41.39, "lon": 2.17, "cityName": "Barcelona"},
+    {"lat": 41.39, "lon": 2.17, "cityName": "Barcelona"}
 ]
+AIRFLOW_PG_CONN_ID = "postgres_default"
+
+data=''
+
+weather_data_list = []
 
 default_args = {
     "owner": "airflow",
@@ -60,17 +64,16 @@ dag = DAG(
 # Did not modulize the function further as the free version of OpenWeatherMap API had to be called for each city separately,
 # and the response had to be parsed for each city separately. So it was easier to follow the logic as it is
 def get_weather_data(**kwargs):
-    weather_data_list =[]
-    data=''
+    global weather_data_list
+    #weather_data_list = [] # Reset the list before appending new data
     try:
         socket.create_connection(("api.openweathermap.org", 80), timeout=5)
         logging.info("Network connection test successful")
     except OSError:
-        logging.error(
-            "Network connection test failed: Unable to reach OpenWeatherMap API")
+        logging.error("Network connection test failed: Unable to reach OpenWeatherMap API")
         return False
     logging.info(f"API Key: {API_KEY}")
-
+    
     for city in cities:
         params = {
             "appid": API_KEY,
@@ -82,8 +85,7 @@ def get_weather_data(**kwargs):
         try:
             logging.info(f"trying to extract from API for {city}")
             try:
-                response = requests.get(
-                    "http://api.openweathermap.org/data/2.5/weather", params=params, timeout=10)
+                response = requests.get(API_URL, params=params, timeout=10)            
                 logging.info(f"API Response was: {response}")
                 response.raise_for_status()
             except Timeout:
@@ -95,7 +97,7 @@ def get_weather_data(**kwargs):
             except Exception as e:
                 logging.error(f"API Request Failed for {city}: {e}")
                 continue
-
+            
             logging.info(f"API Status Code: {response.status_code}")
             data = response.json()
             logging.info(f"Received response: {data}")
@@ -116,7 +118,7 @@ def get_weather_data(**kwargs):
                 'humidity': data["main"]["humidity"],
                 'wind_speed': data["wind"]["speed"],
                 'wind_deg': data["wind"]["deg"],
-                'wind_gust': data["wind"].get("gust", None), # handles missing gust values
+                'wind_gust': data["wind"].get("gust", None),
                 'cloudiness': data["clouds"]["all"],
                 'visibility': data["visibility"],
                 'sunrise': data["sys"]["sunrise"],
@@ -124,16 +126,14 @@ def get_weather_data(**kwargs):
             }
             logging.info(f"Response mapped to data: {weather_data}")
             weather_data_list.append(weather_data)
-            logging.info(
-                f"Appended to weather_data_list from weather_data: {weather_data_list}")
+            logging.info(f"Appended to weather_data_list from weather_data: {weather_data_list}")
         except requests.exceptions.RequestException as e:
             logging.error(f"API Request Failed for {city}: {e}")
             continue
         logging.info(f"Weather Data Fetch Task Completed for {city}")
-
+        
     kwargs['ti'].xcom_push(key="weather_data_list", value=weather_data_list)
-    logging.info(f"Data successfully loaded into XCom: {weather_data_list}")
-
+    logging.info(f"Data successfully loaded into XCom: {weather_data_list}")          
 
 # Airflow Tasks -----------------------------------------------------------------------------------
 execute_get_weather_data = PythonOperator(
@@ -141,7 +141,7 @@ execute_get_weather_data = PythonOperator(
     python_callable=get_weather_data,
     provide_context=True,
     dag=dag,
-)
+)   
 
 # Loads weather data into PostgreSQL using XCom and Jinja templating
 execute_load_weather_data = SQLExecuteQueryOperator(
