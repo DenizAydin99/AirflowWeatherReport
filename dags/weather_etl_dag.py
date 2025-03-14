@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-import json
+import psycopg2
 from dotenv import load_dotenv
 from datetime import timedelta
 from airflow import DAG
@@ -10,11 +10,6 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 import pendulum
 import socket
 from requests.exceptions import Timeout, ConnectionError
-from _scproxy import _get_proxy_settings
-
-# Had to add this because of a python bug on MacOS
-_get_proxy_settings()
-os.environ['NO_PROXY'] = '*'
 
 # Loads environment variables (API_KEY) from an environment file
 load_dotenv()
@@ -133,9 +128,100 @@ def get_weather_data(**kwargs):
         logging.info(f"Weather Data Fetch Task Completed for {city}")
         
     kwargs['ti'].xcom_push(key="weather_data_list", value=weather_data_list)
-    logging.info(f"Data successfully loaded into XCom: {weather_data_list}")          
+    logging.info(f"Data successfully loaded into XCom: {weather_data_list}")  
+
+
+def data_quality_check():
+    # Connect to PostgreSQL
+    conn = psycopg2.connect("dbname=airflow user=airflow password=airflow host=postgres")
+    cur = conn.cursor()
+
+    # Check for non-null required fields
+    cur.execute("""
+        SELECT COUNT(*) FROM public.weather 
+        WHERE country IS NULL OR city_name IS NULL OR temp IS NULL;
+    """)
+    null_count = cur.fetchone()[0]
+    if null_count > 0:
+        raise ValueError(f"Data quality check failed: Found {null_count} rows with null required fields")
+    else:
+        logging.info("Null check passed")
+
+    # Check if column count matches expectation
+    cur.execute("""
+        SELECT COUNT(*) 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+        AND table_name = 'weather';
+    """)
+    column_count = cur.fetchone()[0]
+    expected_count = 21  # Adjust based on your expected number of rows
+    if column_count != expected_count:
+        raise ValueError(f"Data quality check failed: column count {column_count} is lower than expected {expected_count}")
+    else:
+        logging.info("column count check passed")
+
+    # Check if the data is within expected ranges
+    # Temperature should be within -50°C and 60°C.
+    cur.execute("SELECT COUNT(*) FROM public.weather WHERE temp < -50 OR temp > 60;")
+    temp_range_issues = cur.fetchone()[0]
+    if temp_range_issues > 0:
+        raise ValueError(f"Data quality check failed: Found {temp_range_issues} rows with temperature out of expected range (-50, 60)°C")
+    else:
+        logging.info("Temperature check passed")
+
+    # Humidity should be between 0 and 100.
+    cur.execute("SELECT COUNT(*) FROM public.weather WHERE humidity < 0 OR humidity > 100;")
+    humidity_range_issues = cur.fetchone()[0]
+    if humidity_range_issues > 0:
+        raise ValueError(f"Data quality check failed: Found {humidity_range_issues} rows with humidity out of expected range (0, 100)%")
+    else:
+        logging.info("Humidity check passed")
+
+    # Wind speed (km/h) should be between 0 and 150.
+    cur.execute("SELECT COUNT(*) FROM public.weather WHERE wind_speed < 0 OR wind_speed > 150;")
+    wind_speed_range_issues = cur.fetchone()[0]
+    if wind_speed_range_issues > 0:
+        raise ValueError(f"Data quality check failed: Found {wind_speed_range_issues} rows with wind_speed out of expected range (0, 150)")
+    else:
+        logging.info("Wind speed check passed")
+
+    # check if each city appears only once per load, group by city_name.
+    cur.execute("""
+    SELECT city_name, entry_date, COUNT(*) 
+    FROM public.weather 
+    GROUP BY city_name, entry_date 
+    HAVING COUNT(*) > 1;
+    """)
+    duplicates = cur.fetchall()
+    if duplicates:
+        raise ValueError(f"Data quality check failed: Duplicate records found for: {duplicates}")
+    else:
+        logging.info("Duplicate check passed")
+
+    cur.close()
+    conn.close()
+
+def verify_load(**kwargs):
+    # Connect using the same connection details as your load task
+    conn = psycopg2.connect("dbname=airflow user=airflow password=airflow host=postgres")
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM public.weather;")
+    results = cur.fetchall()
+    conn.close()
+    
+    logging.info("Result of SELECT * FROM public.weather:")
+    for row in results:
+        logging.info(row)
+    
+    if not results:
+        logging.error("No data found in the weather table.")
+        raise ValueError("No data found in the weather table.")
+    else:
+        logging.info("Data loaded into the weather table successfully.")
 
 # Airflow Tasks -----------------------------------------------------------------------------------
+
 execute_get_weather_data = PythonOperator(
     task_id="get_weather_data",
     python_callable=get_weather_data,
@@ -192,4 +278,18 @@ execute_load_weather_data = SQLExecuteQueryOperator(
     dag=dag,
 )
 
-execute_get_weather_data >> execute_load_weather_data
+execute_data_quality_check = PythonOperator(
+    task_id="data_quality_check",
+    python_callable=data_quality_check,
+    provide_context=True,
+    dag=dag,
+)
+
+execute_verify_load_task = PythonOperator(
+    task_id="verify_load",
+    python_callable=verify_load,
+    provide_context=True,
+    dag=dag,
+)
+
+execute_get_weather_data >> execute_load_weather_data >> execute_verify_load_task >> execute_data_quality_check
