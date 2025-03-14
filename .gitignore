@@ -20,3 +20,6 @@ __pycache__/
 # System Files (Mac & Windows)
 .DS_Store
 Thumbs.db
+
+#Environment variables
+.env
