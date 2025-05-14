@@ -1,0 +1,159 @@
+version: 2
+
+###############################################################################
+# 1.  RAW / LANDING LAYER  ────────────────────────────────────────────────────
+###############################################################################
+sources:
+  - name: landing
+    schema: raw_schema_landing          
+    description: >
+      Raw payload tables landed by Airflow.  
+      One row per API call, no transformations applied.
+    tables:
+      - name: weather_raw
+        description: "Unmodelled OpenWeatherMap payload (as landed)."
+        columns:
+          - name: country
+            description: "ISO-3166 country code returned by the API."
+            tests: [not_null]
+
+          - name: city_name
+            description: "City returned by the API."
+            tests: [not_null]
+
+          - name: latitude
+            description: "Latitude from the request/response."
+            tests: [not_null]
+
+          - name: longitude
+            description: "Longitude from the request/response."
+            tests: [not_null]
+
+          - name: entry_date
+            description: "UTC timestamp when the row was inserted by Airflow."
+            tests: [not_null]
+
+          # core numeric quality checks straight in the landing layer
+          - name: temp
+            description: "Temperature in °C from the payload."
+            tests:
+              - not_null
+              - accepted_range:
+                  min_value: -50
+                  max_value: 60
+
+          - name: humidity
+            description: "Relative humidity (%) from the payload."
+            tests:
+              - not_null
+              - accepted_range:
+                  min_value: 0
+                  max_value: 100
+
+          - name: wind_speed
+            description: "Wind speed in m/s from the payload."
+            tests:
+              - not_null
+              - accepted_range:
+                  min_value: 0
+                  max_value: 150
+
+        # ensure only one raw record per location-timestamp combination
+        tests:
+          - dbt_utils.unique_combination_of_columns:
+              combination_of_columns:
+                - city_name
+                - latitude
+                - longitude
+                - entry_date
+
+
+###############################################################################
+# 2.  STAGING LAYER  ──────────────────────────────────────────────────────────
+###############################################################################
+models:
+  - name: stg_weather_raw
+    description: |
+      Hourly, deduplicated snapshot of the raw payload with light
+      cleansing, type casting and derived columns.
+      Grain: **location_key · observation_hour**.
+    tags: [stg]
+    columns:
+      - name: location_key
+        description: "MD5 hash of country|city|lat|lon (natural key)."
+        tests: [unique, not_null]
+
+      - name: observation_hour
+        description: "`date_trunc('hour', entry_date)` of the original event."
+        tests: [not_null]
+
+      - name: visibility_flag
+        description: "'missing' / 'present' – derived in the staging SQL."
+
+      - name: temp_fahrenheit
+        description: "Temperature converted to °F."
+
+
+###############################################################################
+# 3.  DIMENSIONS  ─────────────────────────────────────────────────────────────
+###############################################################################
+  - name: dim_location
+    description: "Location dimension (unique lat/lon & city)."
+    tags: [dim]
+    columns:
+      - name: location_key
+        tests: [unique, not_null]
+
+  - name: dim_condition
+    description: "Distinct weather conditions (main + description)."
+    tags: [dim]
+    columns:
+      - name: condition_key
+        tests: [unique, not_null]
+
+  - name: dim_time
+    description: "Time dimension at **hourly** grain."
+    tags: [dim]
+    columns:
+      - name: time_key
+        tests: [unique, not_null]
+
+
+###############################################################################
+# 4.  FACTS  ──────────────────────────────────────────────────────────────────
+###############################################################################
+  - name: fact_weather
+    description: |
+      Weather measurements joined to `dim_location`, `dim_time`
+      and `dim_condition`.  
+      Grain: **location_id · time_id**.
+    tags: [fact]
+    columns:
+      - name: location_id
+        tests: [not_null]
+      - name: time_id
+        tests: [not_null]
+      - name: condition_id
+        tests: [not_null]
+
+      # numeric data-quality checks
+      - name: temp
+        description: "Temperature in °C."
+        tests:
+          - accepted_range:
+              min_value: -50
+              max_value: 60
+
+      - name: humidity
+        description: "Relative humidity (%)"
+        tests:
+          - accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: wind_speed
+        description: "Wind speed in m/s"
+        tests:
+          - accepted_range:
+              min_value: 0
+              max_value: 150

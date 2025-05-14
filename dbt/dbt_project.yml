@@ -1,0 +1,30 @@
+name: weather_dbt_project
+version: '1.0'
+config-version: 2
+
+profile: airflow_dbt
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets: ["target", "dbt_modules"]
+
+models:
+  weather_dbt_project:
+
+    landing:
+      +materialized: table          
+      +schema: landing              
+      +tags: ['landing']
+
+    staging:
+      +materialized: table          
+      +schema: stg                  
+      +tags: ['stg']
+
+    dim:
+      +materialized: incremental
+      +tags: ['dim']
+
+    marts:
+      +materialized: table
+      +tags: ['fact']

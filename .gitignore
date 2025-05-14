@@ -14,12 +14,18 @@ airflow.cfg
 # Compiled Python Files
 __pycache__/
 
-# Jupyter Notebook Checkpoints (if using notebooks)
-.ipynb_checkpoints/
-
-# System Files (Mac & Windows)
+# System Files
 .DS_Store
 Thumbs.db
 
 #Environment variables
 .env
+
+# dbt target directory
+target/
+# dbt logs
+logs/
+#dbt packages
+dbt_packages/
+
+.user.yml

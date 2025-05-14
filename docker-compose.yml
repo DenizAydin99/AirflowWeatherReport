@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:13
@@ -30,6 +28,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
+      - ./dbt:/opt/airflow/dbt
+      - ~/.dbt:/root/.dbt
     ports:
       - "8080:8080"
     command: webserver
@@ -46,7 +46,18 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
+      - ./dbt:/opt/airflow/dbt
+      - ~/.dbt:/root/.dbt
     command: scheduler
+
+  dbt:
+    image: ghcr.io/dbt-labs/dbt-postgres:1.7.9
+    container_name: dbt
+    volumes:
+      - ./dbt:/opt/airflow/dbt
+      - ~/.dbt:/root/.dbt
+    working_dir: /opt/airflow/dbt
+    entrypoint: ["tail", "-f", "/dev/null"]
 
 volumes:
   postgres_data:
