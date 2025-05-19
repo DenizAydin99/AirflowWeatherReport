@@ -50,6 +50,16 @@ services:
       - ~/.dbt:/root/.dbt
     command: scheduler
 
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_FILE: /metabase/metabase.db
+    volumes:
+      - metabase-data:/metabase.db
+
   dbt:
     image: ghcr.io/dbt-labs/dbt-postgres:1.7.9
     container_name: dbt
@@ -61,3 +71,4 @@ services:
 
 volumes:
   postgres_data:
+  metabase-data:

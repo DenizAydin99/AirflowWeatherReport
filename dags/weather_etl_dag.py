@@ -85,8 +85,9 @@ def get_weather_data(**kwargs):
                 'wind_gust': data["wind"].get("gust", None),
                 'cloudiness': data["clouds"]["all"],
                 'visibility': data["visibility"],
-                'sunrise': data["sys"]["sunrise"],
-                'sunset': data["sys"]["sunset"]
+                'sunrise': datetime.fromtimestamp(data["sys"]["sunrise"]),
+                'sunset': datetime.fromtimestamp(data["sys"]["sunset"]),
+                'entry_date': datetime.now()
             }
             local_data.append(weather_data)
         except Exception as e:
@@ -108,8 +109,8 @@ def load_to_landing(**kwargs):
         INSERT INTO raw_schema_landing.weather_raw (
             country, city_name, latitude, longitude, weather_main, weather_description,
             temp, feels_like, temp_min, temp_max, pressure, humidity,
-            wind_speed, wind_deg, wind_gust, cloudiness, visibility, sunrise, sunset
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TO_TIMESTAMP(%s), TO_TIMESTAMP(%s))
+            wind_speed, wind_deg, wind_gust, cloudiness, visibility, sunrise, sunset, entry_date
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
 
     for record in data_list:
@@ -119,7 +120,7 @@ def load_to_landing(**kwargs):
             record['feels_like'], record['temp_min'], record['temp_max'],
             record['pressure'], record['humidity'], record['wind_speed'],
             record['wind_deg'], record['wind_gust'], record['cloudiness'],
-            record['visibility'], record['sunrise'], record['sunset']
+            record['visibility'], record['sunrise'], record['sunset'], record['entry_date']
         ))
 
     try:
@@ -133,14 +134,21 @@ def load_to_landing(**kwargs):
     cur.close()
     conn.close()
 
-# Step 1: dbt deps
+# Initialize the folder for dbt packages
+init_dbt_packages = BashOperator(
+    task_id="init_dbt_packages",
+    bash_command="mkdir -p /opt/airflow/dbt/dbt_packages",
+    dag=dag,
+)
+
+# Step 1: dbt packages
 execute_dbt_deps = BashOperator(
     task_id="dbt_deps",
         bash_command="cd /opt/airflow/dbt && dbt deps",
     dag=dag,
 )
 
-# Step 2: dbt debug
+# Step 2: dbt health check
 execute_dbt_debug = BashOperator(
     task_id="dbt_debug",
         bash_command="cd /opt/airflow/dbt && dbt debug --target dev",
@@ -189,4 +197,10 @@ execute_load_staging = PythonOperator(
     dag=dag,
 )
 
-execute_get_weather_data >> execute_dbt_deps >> execute_dbt_debug >> execute_dbt_run_landing >> execute_load_staging >> execute_dbt_run_stg >> execute_dbt_run_dim >> execute_dbt_run_fact
+execute_dbt_run_hist = BashOperator (
+    task_id="dbt_run_hist",
+    bash_command="cd /opt/airflow/dbt && dbt run --select tag:fact_hist",
+    dag=dag,
+)
+
+init_dbt_packages >> execute_get_weather_data >> execute_dbt_deps >> execute_dbt_debug >> execute_dbt_run_landing >> execute_load_staging >> execute_dbt_run_stg >> execute_dbt_run_dim >> execute_dbt_run_fact >> execute_dbt_run_hist

@@ -28,3 +28,8 @@ models:
     marts:
       +materialized: table
       +tags: ['fact']
+    
+      history:
+          +materialized: incremental        
+          +tags: ['fact_hist']                   
+          +schema: marts 

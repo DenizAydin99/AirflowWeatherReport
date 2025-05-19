@@ -25,5 +25,5 @@ select
     null::integer as visibility,
     null::timestamp as sunrise,
     null::timestamp as sunset,
-    current_timestamp as entry_date     
-where false                                -- produces 0 rows; the table structure is what we need
+    null::timestamp as entry_date     
+where false                                -- we only need the structure, python operator will insert the data

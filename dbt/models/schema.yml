@@ -33,7 +33,7 @@ sources:
             description: "UTC timestamp when the row was inserted by Airflow."
             tests: [not_null]
 
-          # core numeric quality checks straight in the landing layer
+          # core numeric quality checks in the landing layer
           - name: temp
             description: "Temperature in °C from the payload."
             tests:
@@ -43,7 +43,7 @@ sources:
                   max_value: 60
 
           - name: humidity
-            description: "Relative humidity (%) from the payload."
+            description: "Humidity (%) from the payload."
             tests:
               - not_null
               - accepted_range:
@@ -157,3 +157,23 @@ models:
           - accepted_range:
               min_value: 0
               max_value: 150
+
+###############################################################################
+# 5.  HISTORY  ────────────────────────────────────────────────────────────────
+###############################################################################
+models:
+  - name: fact_weather_history
+    description: |
+      history of weather facts.
+      Grain: **location_key · time_key** (no deduplication).
+    tags: [hist]
+    columns:
+      - name: location_key
+        tests: [not_null]
+      - name: time_key
+        tests: [not_null]
+      - name: condition_key
+        tests: [not_null]
+      - name: entry_date
+        description: "Load timestamp of the snapshot row."
+        tests: [not_null]

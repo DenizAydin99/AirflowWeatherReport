@@ -12,7 +12,7 @@ with src as (
         extract(hour from entry_date) as observation_hour_number,
         extract(day from entry_date) as observation_day,
         extract(month from entry_date) as observation_month,
-        extract(year from entry_date) as observation_year
+        cast(extract(year from entry_date) as int) as observation_year
     from {{ ref('stg_weather_raw') }}
 )
 
