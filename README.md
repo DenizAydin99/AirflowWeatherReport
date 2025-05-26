@@ -1,6 +1,9 @@
 # WeatherReportETL
 
-This project is an ETL pipeline designed to fetch weather data from the [OpenWeatherMap API](https://openweathermap.org/), perform data quality checks, and load the data into a PostgreSQL database. The entire workflow is orchestrated using Apache Airflow and containerized with Docker and Docker Compose.
+This project is a batch processing ETL pipeline designed to fetch weather data from the [OpenWeatherMap API](https://openweathermap.org/). In this project, a star schema design was applied to demonstrate data modeling practices and PostgreSQL was utilized as a Data Warehouse. After fetching data from the API, the pipeline persists the data in a staging table to separate the staging area from the analysis-ready data. Afterwards, the pipeline applies transformations and performs data quality checks with dbt. After the quality checks, data will be moved to its final destination (dimension and fact tables).
+
+This project is fully containerized and the entire workflow is orchestrated with Apache Airflow.
+
 
 ## Table of Contents
 
@@ -9,32 +12,35 @@ This project is an ETL pipeline designed to fetch weather data from the [OpenWea
 - [Setup & Installation](#setup--installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
-- [Data Quality Checks](#data-quality-checks)
+- [Data Transformations & Quality Checks](#data-transformations-quality-checks)
 - [Containerization](#containerization)
 - [Troubleshooting](#troubleshooting)
-- [Future Enhancements](#future-enhancements)
 - [License](#license)
 
 ## Overview
 
-The ETL pipeline consists of two main tasks:
-1. **Data Extraction:**  
-   Fetch weather data for a list of cities from the OpenWeatherMap API using a Python function.
-2. **Data Loading:**  
-   Load the extracted weather data into a PostgreSQL database using Airflow’s `SQLExecuteQueryOperator` and Jinja templating.
-
-A post-load verification task then runs a SQL query (`SELECT * FROM weather`) and logs the contents of the table to ensure the data is loaded correctly.
-
+1. **Extract:**  
+   Python tasks in Airflow fetch current weather data for configured cities from the OpenWeatherMap API and write raw JSON into a landing table.
+2. **Load:**
+   Data is inserted into a PostgreSQL staging schema via Airflow’s `SQLExecuteQueryOperator` and Jinja templating.
+3. **Transformations & Validations:**
+   dbt applies transformations to produce dimension and fact tables in a star schema, then runs assertions to enforce data quality.
+4. **Orchestration:**
+   Apache Airflow schedules and monitors each step, handling retries, logging, and alerting.
+   
 ## Project Structure
 
 ```
 WeatherReportETL/
 ├── dags/
-│   └── weather_etl_dag.py      # Airflow DAG file defining ETL tasks
-├── docker-compose.yml          # Docker Compose file to orchestrate Airflow and PostgreSQL containers
-├── Dockerfile                  # Dockerfile for building the Airflow container image
-├── .env                        # Environment file for sensitive configuration (e.g., API keys, Fernet key)
-└── README.md                   # Project README (this file)
+│   └── weather_etl_dag.py         # Main Airflow DAG definition
+├── dbt/
+│   ├── dbt_project.yml            # dbt project configuration
+│   └── models/                    # dbt models and tests
+├── docker-compose.yml             # Compose file defining all services
+├── Dockerfile                     # Custom Airflow image build
+├── .env                           # Environment variables (API keys, Fernet key)
+└── README.md                      # Project documentation
 ```
 
 ## Setup & Installation
@@ -47,7 +53,7 @@ WeatherReportETL/
    ```
 
 2. **Configure Environment Variables:**  
-   Create and update the `.env` file with your settings. For example:
+   Create the `.env` file in the project root with:
 
    ```env
    OPENWEATHERMAP_API_KEY=your_api_key_here
@@ -57,7 +63,7 @@ WeatherReportETL/
 
 3. **Build and Start Containers:**
 
-   Bring down any previous containers:
+   Stop any running stack and remove volumes:
    ```bash
    docker-compose down --remove-orphans
    ```
@@ -70,7 +76,7 @@ WeatherReportETL/
 
 4. **Initialize the Airflow Database:**
 
-   Run the initialization command (use the webserver service or scheduler service as both share the image):
+   Run the initialization command:
    ```bash
    docker-compose run --rm airflow-webserver airflow db init
    ```
@@ -89,18 +95,10 @@ WeatherReportETL/
    ```
 
 ## Configuration
-
-- **Docker Compose:**  
-  The `docker-compose.yml` file defines three services:
-  - **postgres:** Runs PostgreSQL 13 with the specified user, password, and database.
-  - **airflow-webserver:** Runs the Airflow webserver.
-  - **airflow-scheduler:** Runs the Airflow scheduler.
-
-  Both Airflow services load environment variables from the `.env` file to ensure a consistent configuration, including the Fernet key used for encryption.
-
-- **DAGs:**  
-  Place your DAG files in the `dags/` folder. The sample DAG (`weather_etl_dag.py`) contains tasks to fetch weather data, load it into PostgreSQL, and verify the load.
-
+   Make sure that you configure `dbt/profiles.yml` to point at the same Postgres service (host:postgres, port: 5432, user/password: airflow)
+   
+   Both Airflow services load environment variables from the `.env` file to ensure a consistent configuration, including the Fernet key used for encryption.
+   
 ## Usage
 
 1. **Access the Airflow UI:**  
@@ -108,7 +106,7 @@ WeatherReportETL/
    Log in using the admin credentials you created (e.g., `admin/admin`).
 
 2. **Trigger the DAG:**  
-   In the Airflow UI, enable and trigger the `weather_etl` DAG.  
+   In the Airflow UI, enable and trigger the DAG.  
    Monitor task logs to verify that data is fetched, loaded, and verified successfully.
 
 3. **Check Data in PostgreSQL:**  
@@ -118,32 +116,41 @@ WeatherReportETL/
    ```
    Then run:
    ```sql
-   SELECT * FROM weather;
+   SELECT * FROM raw_schema_landing.weather_raw;
    ```
 
-## Data Quality Checks
+## Data Transformations & Quality Checks
 
-After loading data, a verification task runs a SQL query to fetch all rows from the `weather` table and logs the result. This helps ensure that:
-- Data is inserted as expected.
-- The ETL process is operating correctly.
+dbt models in `dbt/models/` build your dimensions (`dim_location`, `dim_condition` and `dim_time`) and fact table (`fact_weather`).
+
+dbt tests ensure non-null, uniqueness, and referential integrity on keys.
+
+The Airflow DAG runs `dbt run` followed by `dbt test` automatically after staging.
 
 ## Containerization
 
-- **Docker & Docker Compose:**  
-  The project uses Docker Compose to orchestrate all components, ensuring a consistent environment.  
-- **Volumes:**  
-  The `./dags` and `./logs` folders are mounted into the container to allow real-time updates and persistent logging.
-- **Health Checks:**  
-  The PostgreSQL service includes a health check (`pg_isready`) to ensure it's ready before Airflow starts.
+- **Services:**
+
+   -postgres: primary data warehouse (5432)
+
+   -airflow-webserver: Airflow UI & API (8080)
+
+   -airflow-scheduler: schedules and runs jobs
+
+   -dbt: dbt services
+
+   -metabase: BI layer for visualization (3000)
 
 ## Troubleshooting
 
 - **No DAGs in the UI:**  
-  Ensure your DAG files are in the `dags/` directory on your host so they are correctly mounted into the container.
+  Ensure that your DAG files are in the `dags/` directory and that there are no syntax errors
 - **Database Connection Issues:**  
   Use service names (e.g., `postgres`) instead of `localhost` in your connection strings.
 - **Fernet Key Errors:**  
   Make sure your Fernet key is correctly defined and consistent across services via the `.env` file.
+- **Airflow UI 500 errors:**
+  Make sure that you do not point at the same port with Metabase and Airflow, or create another PostgreSQL database for metabase
 
 ## License
 
