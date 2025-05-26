@@ -1,6 +1,6 @@
 # WeatherReportETL
 
-This project is a batch processing ETL pipeline designed to fetch weather data from the [OpenWeatherMap API](https://openweathermap.org/). In this project, a star schema design was applied to demonstrate data modeling practices and PostgreSQL was utilized as a Data Warehouse. After fetching data from the API, the pipeline persists the data in a staging table to separate the staging area from the analysis-ready data. Afterwards, the pipeline applies transformations and performs data quality checks with dbt. After the quality checks, data will be moved to its final destination (dimension and fact tables).
+This project is a batch processing ETL pipeline designed to fetch weather data from [OpenWeatherMap API](https://openweathermap.org/). In this project, a star schema design was applied to demonstrate data modeling practices and PostgreSQL was utilized as a Data Warehouse. After fetching data from the API, the pipeline persists the data in landing and staging tables to separate the staging area from the analysis-ready data. Afterwards, the pipeline applies transformations and performs data quality checks with dbt. After the quality checks, data will be moved to its final destination (dimension and fact tables).
 
 This project is fully containerized and the entire workflow is orchestrated with Apache Airflow.
 
